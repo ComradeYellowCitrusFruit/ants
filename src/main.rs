@@ -4,6 +4,9 @@
 *   Copyright (C) 2024 Teresa Maria Rivera
 */
 
+mod ant;
+mod shape;
+
 fn main() {
     /* TODO: stuff */
 }
