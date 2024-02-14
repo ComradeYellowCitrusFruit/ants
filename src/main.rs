@@ -6,6 +6,7 @@
 
 mod ant;
 mod shape;
+mod world;
 
 fn main() {
     /* TODO: stuff */
