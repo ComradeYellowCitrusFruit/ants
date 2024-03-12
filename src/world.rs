@@ -4,11 +4,11 @@
 *   Copyright (C) 2024 Teresa Maria Rivera
 */
 
-use crate::ant::{Ant, Pheromones};
+use crate::ant::{Ant, Condition, Decision, Location, Memory, Pheromones, Source, Then};
 
 use super::shape::Shape;
 use std::{any::TypeId, cell::RefCell, collections::{BinaryHeap, VecDeque}, rc::Rc};
-use glm::{distance, vec2, Vec2};
+use glm::{distance, greaterThan, lessThan, vec2, Vec2};
 
 #[derive(Clone)]
 pub struct Environment {
@@ -84,23 +84,25 @@ impl Environment {
         {
             None
         } else {
-            let mut phers = self.things.iter().filter(|o| (*o.borrow()).type_id() == TypeId::of::<Pheromones>());
-            if phers.any(|o| o.borrow().contains_point(point)) {
-                let val = phers.filter_map(|o| {
-                    if o.borrow().contains_point(point) {
-                        let tmp = o.borrow();
-                        let pher = tmp.as_any().downcast_ref::<Pheromones>().unwrap();
-                        Some((pher.strength/distance(pher.pos, src)) + 2.0)
-                    } else {
-                        None
-                    }
-                }).fold(2f32, |a, b| a + b);
-
-                Some((point, val))
+            if self.things.iter().any(|o| o.borrow().type_id() == TypeId::of::<Pheromones>()) {
+                Some((point, self.pheromone_strength_at_pos(point) + 2.0))
             } else {
                 Some((point, 1.0f32))
             }
         }
+    }
+
+    pub fn pheromone_strength_at_pos(&self, pos: Vec2) -> f32 {
+        self.things.clone().into_iter().filter_map(|r| {
+            if  r.borrow().type_id() != TypeId::of::<Pheromones>() ||
+                !r.borrow().contains_point(pos) 
+            {
+                return None;
+            }
+
+            let p = (*r.borrow()).downcast_ref::<Pheromones>().unwrap();
+            Some(p.strength/distance(p.pos, pos))
+        }).fold(0f32, |acc, s| acc + s)
     }
 
     pub fn chart_path(&self, src: &Ant, dest: Vec2) -> Option<Vec<Vec2>> {
@@ -179,15 +181,16 @@ impl Environment {
             let cur = open.pop().unwrap();
 
             if cur.0 == dest {
-                let mut path = VecDeque::from([cur.0]);
+                let mut path = Vec::new();
                 let mut this = cur;
-
+                
+                path.push(this.0);
                 while this.0 != src.pos {
                     this = astar[this.6].clone();
-                    path.push_front(this.0);
+                    path.push(this.0);
                 }
 
-                return Some(path.make_contiguous().to_vec());
+                return Some(path);
             }
 
             for i in cur.3.clone().into_iter() {
@@ -210,5 +213,138 @@ impl Environment {
         }
 
         None
+    }
+
+    fn get_location(&self, src: &Ant, loc: Location) -> Vec2 {
+        match loc {
+            Location::Here => src.pos,
+            Location::Home | Location::Dest => todo!(),
+            Location::Pos(p) => p,
+            Location::PheromoneSrc => {
+                let a = self.things.clone().into_iter().filter_map(|a| {
+                    if a.borrow().type_id() != TypeId::of::<Pheromones>() {
+                        return None;
+                    }
+
+                    let p = (*a.borrow()).downcast_ref::<Pheromones>().unwrap();
+                    Some(p.pos)
+                });
+                a.fold(vec2(f32::MAX, f32::MAX), |acc, p| {
+                    if square_dist(acc, src.pos) < square_dist(p, src.pos) {
+                        p
+                    } else {
+                        acc
+                    }
+                })                
+            },
+        }
+    }
+
+    fn evaluate_src(&self, src: &Ant, source: Source) -> Memory {
+        match source {
+            Source::Number(n) => Memory::Number(n),
+            Source::Dist(a) => {
+                let target = match a {
+                    Location::Here => return Memory::Number(0.0),
+                    _ => self.get_location(src, a),
+                };
+
+                Memory::Number(distance(target, src.pos))
+            },
+            Source::Memory(i) => src.memory[src.memory.len() - (i as usize + 1)],
+            Source::PheromoneStrength => Memory::Number(self.pheromone_strength_at_pos(src.pos)),
+            Source::Food => todo!(),
+            Source::Loc(l) => Memory::Position(self.get_location(src, l)),
+        }
+    }
+
+    fn evaluate_cond(&self, src: &Ant, cond: Condition) -> bool {
+        match cond {
+            Condition::Equal(a, b) => {
+                let aa = self.evaluate_src(src, a);
+                let bb = self.evaluate_src(src, b);
+                aa == bb
+            },
+            Condition::Not(cond) => !self.evaluate_cond(src, *cond),
+            Condition::LessThan(a, b) => {
+                match self.evaluate_src(src, a) {
+                    Memory::Number(aa) => {
+                        match self.evaluate_src(src, b) {
+                            Memory::Number(bb) => aa < bb,
+                            _ => false,
+                        }
+                    },
+                    Memory::Position(aa) => {
+                        match self.evaluate_src(src, b) {
+                            Memory::Position(bb) => lessThan(aa, bb).x && lessThan(aa, bb).y,
+                            _ => false,
+                        }
+                    }
+                }
+            },
+            Condition::GreaterThan(a, b) => {
+                match self.evaluate_src(src, a) {
+                    Memory::Number(aa) => {
+                        match self.evaluate_src(src, b) {
+                            Memory::Number(bb) => aa > bb,
+                            _ => false,
+                        }
+                    },
+                    Memory::Position(aa) => {
+                        match self.evaluate_src(src, b) {
+                            Memory::Position(bb) => greaterThan(aa, bb).x && greaterThan(aa, bb).y,
+                            _ => false,
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn make_decision<F: FnMut(Then)>(&self, src: &Ant, d: Decision, mut f: F) {
+        match d {
+            Decision::Always(t) => f(t.clone()),
+            Decision::If(c, t) => {
+                if self.evaluate_cond(src, c) {
+                    f(t.clone())
+                }
+            }
+            Decision::IfHaveFood(t) => {
+                if src.has_food {
+                    f(t.clone())
+                }
+            }
+        }
+    }
+
+    pub fn step(&mut self) {
+        // first, process each pheromone
+        self.things.iter_mut().for_each(|t| {
+            if (*t.borrow()).type_id() == TypeId::of::<Pheromones>() {
+                t.borrow_mut().downcast_mut::<Pheromones>().unwrap().strength -= 0.1;
+            }
+        });
+
+        // now, actual ant behaior.
+        for a in &self.ants {
+            let mut tmp = a.borrow_mut();
+            let ant = (*tmp).downcast_mut::<Ant>().unwrap();
+
+            // their brains, ants have simple brains
+            for d in &ant.decisions {
+                self.make_decision(&ant.clone(), d.clone(), |mut t| {
+                    loop {
+                        match t {
+                            Then::Forget(b) => { 
+                                let _ = ant.memory.pop_front();
+                                t = *b; 
+                                continue; 
+                            },
+                            _ => todo!(),
+                        }
+                    }
+                });
+            }
+        }
     }
 }

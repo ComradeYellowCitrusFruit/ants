@@ -5,9 +5,9 @@
 */
 
 use glm::{vec2, Vec2};
-use std::vec::Vec;
+use std::{collections::VecDeque, vec::Vec};
 
-use crate::{shape::{self, BasicShape, Shape, ShapeType}, world::square_dist};
+use crate::{shape::{BasicShape, Shape, ShapeType}, world::square_dist};
 
 #[derive(Copy, Clone)]
 pub enum Location {
@@ -51,7 +51,7 @@ pub enum Decision {
     Always(Then),
 }
 
-#[derive(Clone)]
+#[derive(Copy, Clone, PartialEq)]
 pub enum Memory {
     Number(f32),
     Position(Vec2),
@@ -61,9 +61,10 @@ pub enum Memory {
 #[derive(Clone)]
 pub struct Ant {
     pub(crate) pos: Vec2, // aka center of a circle with r=2 (in a 250x250 grid)
-    decisions: [Decision; 4],
-    memory: Vec<Memory>,
-    has_food: bool,
+    pub(crate) decisions: [Decision; 4],
+    pub(crate) memory: VecDeque<Memory>,
+    pub(crate) has_food: bool,
+    pub(crate) path: Vec<Vec2>
 }
 
 impl Shape for Ant {
